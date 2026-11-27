@@ -454,6 +454,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_QUANDONG_S3_DEV_4_0_LCD
         bool "Quandong ESP32-S3 4.0-inch SPI LCD (全动 4.0寸)"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_BANBANHMI_ES3C28P
+        bool "BanBanhMi ES3C28P (LCDWIKI 2.8\" ESP32-S3)"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_RYMCU_BIGSMART
         bool "RYMCU BigSmart"
         depends on IDF_TARGET_ESP32S3
@@ -1246,6 +1249,13 @@ menu "TAIJIPAI_S3_CONFIG"
     default y
     help
         启动双声道
+endmenu
+
+menu "BanBanhMi ES3C28P"
+    depends on BOARD_TYPE_BANBANHMI_ES3C28P
+    config BANBANHMI_TOUCH_TEST
+        bool "Touch test mode: log touch coordinates and press/release"
+        default n
 endmenu
 
 endmenu
