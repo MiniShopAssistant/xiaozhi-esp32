@@ -17,11 +17,38 @@
 #include <esp_timer.h>
 
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 #define TAG "BanBanhMiEs3c28p"
 
 static constexpr float kMicGainDb = 42.0f;
+
+// Latency probe for `pnpm device:latency` (spec 007 T070, research R11). One line when the finger is lifted
+// and one when the first frame of the spoken answer is written to the speaker; the server joins them
+// with its own `device_turn` log. Only counts turns answered with TTS (state "speaking").
+static std::atomic<int> g_turn{0};
+static std::atomic<bool> g_wait_first_audio{false};
+
+static void NoteRelease() {
+    const int turn = ++g_turn;
+    ESP_LOGI(TAG, "VOICE_METRIC turn=%d event=release esp_timer_us=%lld", turn,
+             static_cast<long long>(esp_timer_get_time()));
+    g_wait_first_audio = true;
+}
+
+static void NoteOutput() {
+    if (!g_wait_first_audio.load()) {
+        return;
+    }
+    if (Application::GetInstance().GetDeviceState() != kDeviceStateSpeaking) {
+        return;
+    }
+    if (g_wait_first_audio.exchange(false)) {
+        ESP_LOGI(TAG, "VOICE_METRIC turn=%d event=first_audio esp_timer_us=%lld", g_turn.load(),
+                 static_cast<long long>(esp_timer_get_time()));
+    }
+}
 
 // ILI9341V vendor-specific initialization sequence (from quandong 2.8" SPI board)
 static const ili9341_lcd_init_cmd_t kVendorSpecificInit[] = {
@@ -70,6 +97,11 @@ public:
             blank_until_us_ = esp_timer_get_time() + kInputBlankUs;
         }
         Es8311AudioCodec::EnableInput(enable);
+    }
+
+    void OutputData(std::vector<int16_t>& data) override {
+        NoteOutput();
+        Es8311AudioCodec::OutputData(data);
     }
 
     bool InputData(std::vector<int16_t>& data) override {
@@ -257,6 +289,7 @@ private:
             }
             self->ptt_pressed_ = false;
             self->ShowIdleState();
+            NoteRelease();
             Application::GetInstance().StopListening();
         }
     }
@@ -458,6 +491,7 @@ private:
                 return;
             }
             boot_talking_ = false;
+            NoteRelease();
             Application::GetInstance().StopListening();
         });
     }
