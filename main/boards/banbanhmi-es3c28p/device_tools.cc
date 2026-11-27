@@ -20,6 +20,7 @@ constexpr char kTag[] = "BanBanhMiTools";
 constexpr size_t kMaxScreenTextBytes = 200;
 constexpr size_t kMaxStatusTextChars = 40;
 constexpr size_t kMaxStatusTextBytes = 160;
+constexpr int kMaxCountdownSec = 30;
 
 bool IsAllowedStatusState(std::string_view state) {
     return state == "listening" || state == "processing" || state == "awaiting_ok" ||
@@ -73,7 +74,7 @@ bool PlayBoardPhrase(const char* id) {
     return true;
 }
 
-void RegisterBanBanhMiDeviceTools(Display* display) {
+void RegisterBanBanhMiDeviceTools(Display* display, StatusCallback on_status) {
     auto& mcp_server = McpServer::GetInstance();
 
     mcp_server.AddTool(
@@ -116,14 +117,16 @@ void RegisterBanBanhMiDeviceTools(Display* display) {
 
     mcp_server.AddTool(
         "self.screen.show_status",
-        "Update the screen status line for a voice listening session. "
+        "Update the landscape status screen for a voice listening session. "
         "Allowed state values: listening, processing, awaiting_ok, closed. "
-        "text must be UTF-8, up to 40 characters (160 bytes). "
-        "State 'closed' restores the standby status text.",
+        "text must be UTF-8, up to 40 characters (160 bytes), shown in the heard-text area. "
+        "Optional countdown_s (0..30, default 0) runs a local 1 s countdown on screen when "
+        "state is 'awaiting_ok'; any new show_status call or state change cancels the timer.",
         PropertyList({Property("state", kPropertyTypeString),
                       Property("text", kPropertyTypeString, std::string(""))
-                          .SetMaxLength(kMaxStatusTextBytes)}),
-        [display](const PropertyList& properties) -> ToolResult {
+                          .SetMaxLength(kMaxStatusTextBytes),
+                      Property("countdown_s", kPropertyTypeInteger, 0, 0, kMaxCountdownSec)}),
+        [display, on_status = std::move(on_status)](const PropertyList& properties) -> ToolResult {
             const auto& state = properties["state"].value<std::string>();
             if (!IsAllowedStatusState(state)) {
                 return std::unexpected("invalid status state");
@@ -135,22 +138,31 @@ void RegisterBanBanhMiDeviceTools(Display* display) {
             if (CountUtf8Chars(text) > kMaxStatusTextChars) {
                 return std::unexpected("text exceeds 40 characters");
             }
-            if (display == nullptr) {
+            const int countdown_s = properties["countdown_s"].value<int>();
+            if (countdown_s < 0 || countdown_s > kMaxCountdownSec) {
+                return std::unexpected("countdown_s out of range (0..30)");
+            }
+            if (display == nullptr && !on_status) {
                 return std::unexpected("display not available");
             }
 
-            ESP_LOGI(kTag, "show_status state=%s len=%u t=%lld ms", state.c_str(),
-                     static_cast<unsigned>(text.size()),
+            ESP_LOGI(kTag, "show_status state=%s len=%u countdown_s=%d t=%lld ms", state.c_str(),
+                     static_cast<unsigned>(text.size()), countdown_s,
                      static_cast<long long>(esp_timer_get_time() / 1000));
 
-            const bool closed = (state == "closed");
+            std::string status_state = state;
             std::string status_text = text;
             Application::GetInstance().Schedule(
-                [display, closed, status_text = std::move(status_text)]() {
-                    if (closed) {
-                        display->SetStatus(Lang::Strings::STANDBY);
-                    } else {
-                        display->SetStatus(status_text.c_str());
+                [display, on_status, status_state = std::move(status_state),
+                 status_text = std::move(status_text), countdown_s]() {
+                    if (on_status) {
+                        on_status(status_state, status_text, countdown_s);
+                    } else if (display != nullptr) {
+                        if (status_state == "closed") {
+                            display->SetStatus(Lang::Strings::STANDBY);
+                        } else {
+                            display->SetStatus(status_text.c_str());
+                        }
                     }
                 });
             return true;

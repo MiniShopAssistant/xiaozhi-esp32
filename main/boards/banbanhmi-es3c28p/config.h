@@ -34,12 +34,14 @@
 #define DISPLAY_DC_PIN       GPIO_NUM_46
 #define DISPLAY_SPI_CS_PIN   GPIO_NUM_10
 
-// Portrait 240x320
-#define DISPLAY_WIDTH    240
-#define DISPLAY_HEIGHT   320
-#define DISPLAY_MIRROR_X false
+// Landscape 320x240 (ILI9341 rotated 90 deg: swap_xy=true, mirror_x=true, mirror_y=false).
+// If the image appears rotated 180 deg on hardware, flip to MIRROR_X=false, MIRROR_Y=true.
+// Touch coordinates in banbanhmi_es3c28p.cc derive their axis flags from these macros.
+#define DISPLAY_WIDTH    320
+#define DISPLAY_HEIGHT   240
+#define DISPLAY_MIRROR_X true
 #define DISPLAY_MIRROR_Y false
-#define DISPLAY_SWAP_XY  false
+#define DISPLAY_SWAP_XY  true
 
 #define DISPLAY_OFFSET_X 0
 #define DISPLAY_OFFSET_Y 0
