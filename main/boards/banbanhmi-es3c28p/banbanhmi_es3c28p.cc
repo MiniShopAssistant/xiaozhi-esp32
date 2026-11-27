@@ -2,6 +2,7 @@
 #include "button.h"
 #include "codecs/es8311_audio_codec.h"
 #include "config.h"
+#include "device_tools.h"
 #include "display/lcd_display.h"
 #include "wifi_board.h"
 
@@ -14,7 +15,12 @@
 #include <esp_lvgl_port.h>
 #include <esp_timer.h>
 
+#include <algorithm>
+#include <vector>
+
 #define TAG "BanBanhMiEs3c28p"
+
+static constexpr float kMicGainDb = 42.0f;
 
 // ILI9341V vendor-specific initialization sequence (from quandong 2.8" SPI board)
 static const ili9341_lcd_init_cmd_t kVendorSpecificInit[] = {
@@ -46,6 +52,36 @@ static const ili9341_lcd_init_cmd_t kVendorSpecificInit[] = {
      15, 0},
     {0, (uint8_t[]){0}, 0x11, 0},
     {0, (uint8_t[]){0}, 0x29, 0},
+};
+
+// ES8311 codec for this board with two changes, both kept inside the board directory:
+//  - the first 300 ms after the input is switched on are muted: the ADC start-up produces a large
+//    low-frequency step (measured: -25 dBFS, 94% of the energy under 100 Hz, peak -8 dBFS) that the
+//    STT model "recognised" as a word when nobody was speaking;
+//  - the microphone gain is raised to 42 dB (default 30 dB): speech was only about 10 dB above the
+//    noise floor at 30 cm.
+class BanBanhMiCodec : public Es8311AudioCodec {
+public:
+    using Es8311AudioCodec::Es8311AudioCodec;
+
+    void EnableInput(bool enable) override {
+        if (enable && !input_enabled()) {
+            blank_until_us_ = esp_timer_get_time() + kInputBlankUs;
+        }
+        Es8311AudioCodec::EnableInput(enable);
+    }
+
+    bool InputData(std::vector<int16_t>& data) override {
+        const bool ok = AudioCodec::InputData(data);
+        if (ok && esp_timer_get_time() < blank_until_us_) {
+            std::fill(data.begin(), data.end(), 0);
+        }
+        return ok;
+    }
+
+private:
+    static constexpr int64_t kInputBlankUs = 300 * 1000;
+    int64_t blank_until_us_ = 0;
 };
 
 class Es3c28pDisplay : public SpiLcdDisplay {
@@ -131,10 +167,21 @@ public:
         SpiLcdDisplay::SetChatMessage(role, content);
         // The parent re-aligns the multiline chat bar to the screen bottom on every update.
         DisplayLockGuard lock(this);
+        if (chat_message_label_ != nullptr) {
+            const lv_font_t* font = lv_obj_get_style_text_font(chat_message_label_, LV_PART_MAIN);
+            int32_t line_height =
+                (font != nullptr && font->line_height > 0) ? font->line_height : 20;
+            int32_t line_space =
+                lv_obj_get_style_text_line_space(chat_message_label_, LV_PART_MAIN);
+            int32_t max_height = line_height * kMaxChatLines + line_space * (kMaxChatLines - 1);
+            lv_obj_set_style_max_height(chat_message_label_, max_height, LV_PART_MAIN);
+            lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_MODE_DOTS);
+        }
         AnchorChatBar();
     }
 
 private:
+    static constexpr int kMaxChatLines = 4;
     static constexpr int kPttHeight = DISPLAY_HEIGHT / 2;
     static constexpr uint32_t kPttIdleColorHex = 0x1E88E5;
 
@@ -268,7 +315,7 @@ private:
         ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
-    // Drive GPIO1 LOW to enable the on-board FM8002E speaker amplifier
+    // Start with the FM8002E amplifier OFF (GPIO1 HIGH); the codec driver turns it on with the output
     void InitializeAudioPaEnable() {
         gpio_config_t io_conf = {};
         io_conf.pin_bit_mask = (1ULL << AUDIO_PA_ENABLE_PIN);
@@ -277,7 +324,7 @@ private:
         io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
         io_conf.intr_type = GPIO_INTR_DISABLE;
         gpio_config(&io_conf);
-        gpio_set_level(AUDIO_PA_ENABLE_PIN, 0);
+        gpio_set_level(AUDIO_PA_ENABLE_PIN, 1);
     }
 
     void InitializeDisplay() {
@@ -389,13 +436,16 @@ public:
         InitializeTouch();
         InitializeButtons();
         GetBacklight()->SetBrightness(100);
+        RegisterBanBanhMiDeviceTools(display_);
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        static Es8311AudioCodec audio_codec(
+        static BanBanhMiCodec audio_codec(
             i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
             AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
             AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR, true, true);
+        static const bool gain_set = (audio_codec.SetInputGain(kMicGainDb), true);
+        (void)gain_set;
         return &audio_codec;
     }
 

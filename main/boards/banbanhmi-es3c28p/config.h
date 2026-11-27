@@ -12,13 +12,16 @@
 #define AUDIO_I2S_GPIO_DIN  GPIO_NUM_6
 #define AUDIO_I2S_GPIO_DOUT GPIO_NUM_8
 
-#define AUDIO_CODEC_PA_PIN      GPIO_NUM_NC
 #define AUDIO_CODEC_I2C_SCL_PIN GPIO_NUM_15
 #define AUDIO_CODEC_I2C_SDA_PIN GPIO_NUM_16
 #define AUDIO_CODEC_ES8311_ADDR ES8311_CODEC_DEFAULT_ADDR
 
-// Drive LOW to enable the on-board FM8002E speaker amplifier
-#define AUDIO_PA_ENABLE_PIN GPIO_NUM_1
+// On-board FM8002E speaker amplifier: LOW = on, HIGH = off. The codec driver switches it with the
+// output (pa_inverted = true), so the speaker is silent while only the microphone is in use.
+// Holding it LOW all the time made every codec re-initialisation pop through the speaker, and the
+// microphone next to it recorded the pop (peak 0 dBFS), which the STT model then "recognised".
+#define AUDIO_CODEC_PA_PIN GPIO_NUM_1
+#define AUDIO_PA_ENABLE_PIN AUDIO_CODEC_PA_PIN
 
 #define BUILTIN_LED_GPIO        GPIO_NUM_NC
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0

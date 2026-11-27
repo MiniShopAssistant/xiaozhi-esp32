@@ -25,3 +25,15 @@ python scripts/build.py banbanhmi-es3c28p --language vi-VN --wake-word disabled
 ```
 
 Để bật chế độ kiểm tra cảm ứng (ghi log tọa độ và sự kiện nhấn/thả qua serial), bật `CONFIG_BANBANHMI_TOUCH_TEST` trong `idf.py menuconfig` tại mục **Xiaozhi Assistant → BanBanhMi ES3C28P**.
+
+## Công cụ MCP trên thiết bị
+
+- `self.audio.play_phrase`: Phát âm thanh thông báo tiếng Việt ngắn được nhúng sẵn theo tham số chuỗi `id`. Các giá trị `id` hợp lệ:
+  - `listening`
+  - `not_heard`
+  - `offline`
+  - `quota`
+  - `too_long`
+  - `not_ready`
+  - `tts_fail`
+- `self.screen.show_text`: Hiển thị văn bản UTF-8 (tối đa 200 byte) ở vùng tin nhắn trên màn hình theo tham số chuỗi `text` (tối đa 4 dòng, tràn sẽ rút gọn bằng dấu `...`; truyền chuỗi rỗng để xóa).
