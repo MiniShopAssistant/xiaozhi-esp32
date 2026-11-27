@@ -21,8 +21,10 @@ Board tùy chỉnh cho mạch **LCDWIKI ES3C28P** (ESP32-S3 N16R8):
 ## Cách build
 
 ```bash
-python scripts/build.py banbanhmi-es3c28p --language vi-VN --wake-word disabled
+python scripts/build.py banbanhmi-es3c28p --language vi-VN --wake-word hiesp
 ```
+
+Lệnh trên bật wake word AFE `"Hi,ESP"` (`wn9_hiesp`), gửi dữ liệu âm thanh wake word (`CONFIG_SEND_WAKE_WORD_DATA=y`), tắt AEC (chế độ nghe `auto`) và tắt nhận diện wake word khi đang nghe (`CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=n`). Khi vào trạng thái nghe rảnh tay, màn hình hiển thị tín hiệu trực quan (không phát âm thanh để tránh mic thu lại) và vẫn giữ vùng **"Giữ để nói"** hoạt động bình thường.
 
 Để bật chế độ kiểm tra cảm ứng (ghi log tọa độ và sự kiện nhấn/thả qua serial), bật `CONFIG_BANBANHMI_TOUCH_TEST` trong `idf.py menuconfig` tại mục **Xiaozhi Assistant → BanBanhMi ES3C28P**.
 
@@ -37,3 +39,5 @@ python scripts/build.py banbanhmi-es3c28p --language vi-VN --wake-word disabled
   - `not_ready`
   - `tts_fail`
 - `self.screen.show_text`: Hiển thị văn bản UTF-8 (tối đa 200 byte) ở vùng tin nhắn trên màn hình theo tham số chuỗi `text` (tối đa 4 dòng, tràn sẽ rút gọn bằng dấu `...`; truyền chuỗi rỗng để xóa).
+- `self.screen.show_status`: Cập nhật dòng trạng thái phiên nghe trên màn hình theo hai tham số `state` (`listening` | `processing` | `awaiting_ok` | `closed`) và `text` (UTF-8, tối đa 40 ký tự / 160 byte). Giá trị `state = "closed"` trả dòng trạng thái về chữ chờ mặc định.
+- `self.session.close`: Đưa thiết bị từ trạng thái đang nghe/đang nói về trạng thái nghỉ (`idle`) mà không đóng kênh WebSocket, tự động tắt xử lý giọng nói và bật lại nhận diện wake word.

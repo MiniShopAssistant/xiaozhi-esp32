@@ -2,6 +2,7 @@
 
 #include "application.h"
 #include "assets/lang_config.h"
+#include "device_state.h"
 #include "display/display.h"
 #include "mcp_server.h"
 
@@ -11,11 +12,29 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
 constexpr char kTag[] = "BanBanhMiTools";
 constexpr size_t kMaxScreenTextBytes = 200;
+constexpr size_t kMaxStatusTextChars = 40;
+constexpr size_t kMaxStatusTextBytes = 160;
+
+bool IsAllowedStatusState(std::string_view state) {
+    return state == "listening" || state == "processing" || state == "awaiting_ok" ||
+           state == "closed";
+}
+
+size_t CountUtf8Chars(std::string_view text) {
+    size_t count = 0;
+    for (unsigned char byte : text) {
+        if ((byte & 0xC0) != 0x80) {
+            ++count;
+        }
+    }
+    return count;
+}
 
 struct PhraseEntry {
     const char* id;
@@ -92,6 +111,66 @@ void RegisterBanBanhMiDeviceTools(Display* display) {
                 [display, message = std::move(message)]() {
                     display->SetChatMessage("assistant", message.c_str());
                 });
+            return true;
+        });
+
+    mcp_server.AddTool(
+        "self.screen.show_status",
+        "Update the screen status line for a voice listening session. "
+        "Allowed state values: listening, processing, awaiting_ok, closed. "
+        "text must be UTF-8, up to 40 characters (160 bytes). "
+        "State 'closed' restores the standby status text.",
+        PropertyList({Property("state", kPropertyTypeString),
+                      Property("text", kPropertyTypeString, std::string(""))
+                          .SetMaxLength(kMaxStatusTextBytes)}),
+        [display](const PropertyList& properties) -> ToolResult {
+            const auto& state = properties["state"].value<std::string>();
+            if (!IsAllowedStatusState(state)) {
+                return std::unexpected("invalid status state");
+            }
+            const auto& text = properties["text"].value<std::string>();
+            if (text.size() > kMaxStatusTextBytes) {
+                return std::unexpected("text exceeds 160 bytes");
+            }
+            if (CountUtf8Chars(text) > kMaxStatusTextChars) {
+                return std::unexpected("text exceeds 40 characters");
+            }
+            if (display == nullptr) {
+                return std::unexpected("display not available");
+            }
+
+            ESP_LOGI(kTag, "show_status state=%s len=%u t=%lld ms", state.c_str(),
+                     static_cast<unsigned>(text.size()),
+                     static_cast<long long>(esp_timer_get_time() / 1000));
+
+            const bool closed = (state == "closed");
+            std::string status_text = text;
+            Application::GetInstance().Schedule(
+                [display, closed, status_text = std::move(status_text)]() {
+                    if (closed) {
+                        display->SetStatus(Lang::Strings::STANDBY);
+                    } else {
+                        display->SetStatus(status_text.c_str());
+                    }
+                });
+            return true;
+        });
+
+    mcp_server.AddTool(
+        "self.session.close",
+        "End the active voice listening session and return the device to idle state "
+        "without closing the audio channel.",
+        PropertyList(),
+        [](const PropertyList&) -> ToolResult {
+            ESP_LOGI(kTag, "session_close t=%lld ms",
+                     static_cast<long long>(esp_timer_get_time() / 1000));
+            Application::GetInstance().Schedule([]() {
+                auto& app = Application::GetInstance();
+                const DeviceState state = app.GetDeviceState();
+                if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+                    app.SetDeviceState(kDeviceStateIdle);
+                }
+            });
             return true;
         });
 }

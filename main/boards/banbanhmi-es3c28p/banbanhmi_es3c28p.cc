@@ -3,8 +3,10 @@
 #include "codecs/es8311_audio_codec.h"
 #include "config.h"
 #include "connectivity.h"
+#include "device_state.h"
 #include "device_tools.h"
 #include "display/lcd_display.h"
+#include "led/led.h"
 #include "wifi_board.h"
 
 #include <driver/i2c_master.h>
@@ -153,6 +155,7 @@ public:
         ptt_label_ = lv_label_create(ptt_btn_);
         lv_label_set_text(ptt_label_, "Giữ để nói");
         lv_obj_set_style_text_color(ptt_label_, lv_color_white(), 0);
+        lv_obj_set_style_text_align(ptt_label_, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_center(ptt_label_);
 
         lv_obj_add_event_cb(ptt_btn_, PttEventCb, LV_EVENT_PRESSED, this);
@@ -203,7 +206,22 @@ public:
         if (ptt_btn_ == nullptr || ptt_label_ == nullptr || ptt_pressed_) {
             return;
         }
-        ShowIdleState();
+        UpdatePttVisual();
+    }
+
+    // Called on the main task via ScreenStateIndicator when the device state changes.
+    // Shows a silent visual listening cue during a wake session without blocking PTT or the mic.
+    void OnDeviceStateChanged(DeviceState state) {
+        DisplayLockGuard lock(this);
+        const bool now_listening = (state == kDeviceStateListening);
+        if (listening_ == now_listening) {
+            return;
+        }
+        listening_ = now_listening;
+        if (ptt_btn_ == nullptr || ptt_label_ == nullptr || ptt_pressed_) {
+            return;
+        }
+        UpdatePttVisual();
     }
 
     void SetChatMessage(const char* role, const char* content) override {
@@ -235,18 +253,29 @@ private:
         }
     }
     static constexpr uint32_t kPttActiveColorHex = 0xD32F2F;
+    static constexpr uint32_t kPttListeningColorHex = 0x2E7D32;
     static constexpr uint32_t kPttOfflineColorHex = 0x546E7A;
 
     lv_obj_t* ptt_btn_ = nullptr;
     lv_obj_t* ptt_label_ = nullptr;
     bool offline_ = false;
+    // true while the device is in kDeviceStateListening (e.g. hands-free wake session)
+    bool listening_ = false;
     // true between an accepted press and its release: a rejected press (offline) never starts a turn
     bool ptt_pressed_ = false;
 
     // Caller must hold the display lock.
-    void ShowIdleState() {
-        lv_obj_set_style_bg_color(ptt_btn_, lv_color_hex(offline_ ? kPttOfflineColorHex : kPttIdleColorHex), 0);
-        lv_label_set_text(ptt_label_, offline_ ? "Mất kết nối, đang thử lại" : "Giữ để nói");
+    void UpdatePttVisual() {
+        if (offline_) {
+            lv_obj_set_style_bg_color(ptt_btn_, lv_color_hex(kPttOfflineColorHex), 0);
+            lv_label_set_text(ptt_label_, "Mất kết nối, đang thử lại");
+        } else if (listening_) {
+            lv_obj_set_style_bg_color(ptt_btn_, lv_color_hex(kPttListeningColorHex), 0);
+            lv_label_set_text(ptt_label_, "Đang nghe\nGiữ để nói");
+        } else {
+            lv_obj_set_style_bg_color(ptt_btn_, lv_color_hex(kPttIdleColorHex), 0);
+            lv_label_set_text(ptt_label_, "Giữ để nói");
+        }
     }
 
     static void PttEventCb(lv_event_t* e) {
@@ -288,7 +317,8 @@ private:
                 return;
             }
             self->ptt_pressed_ = false;
-            self->ShowIdleState();
+            self->listening_ = false;
+            self->UpdatePttVisual();
             NoteRelease();
             Application::GetInstance().StopListening();
         }
@@ -344,12 +374,29 @@ private:
 #endif
 };
 
+// This board has no physical LED; hook Application's Led::OnStateChanged() path to drive
+// a silent on-screen listening cue without touching upstream core code.
+class ScreenStateIndicator : public Led {
+public:
+    explicit ScreenStateIndicator(Es3c28pDisplay* display) : display_(display) {}
+
+    void OnStateChanged() override {
+        if (display_ == nullptr) {
+            return;
+        }
+        display_->OnDeviceStateChanged(Application::GetInstance().GetDeviceState());
+    }
+
+private:
+    Es3c28pDisplay* display_;
+};
+
 class BanBanhMiEs3c28pBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_ = nullptr;
     Button boot_button_;
     bool boot_talking_ = false;
-    LcdDisplay* display_ = nullptr;
+    Es3c28pDisplay* display_ = nullptr;
 
     void InitializeI2c() {
         i2c_master_bus_config_t i2c_bus_cfg = {
@@ -507,8 +554,13 @@ public:
         GetBacklight()->SetBrightness(100);
         RegisterBanBanhMiDeviceTools(display_);
         StartConnectivityMonitor([this](bool offline) {
-            static_cast<Es3c28pDisplay*>(display_)->SetOffline(offline);
+            display_->SetOffline(offline);
         });
+    }
+
+    virtual Led* GetLed() override {
+        static ScreenStateIndicator indicator(display_);
+        return &indicator;
     }
 
     virtual AudioCodec* GetAudioCodec() override {
