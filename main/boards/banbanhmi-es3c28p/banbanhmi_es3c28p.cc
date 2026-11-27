@@ -109,6 +109,21 @@ public:
             lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_EVENT_BUBBLE);
         }
         lv_obj_add_event_cb(screen, ScreenTouchTestCb, LV_EVENT_PRESSED, this);
+
+        // Five target dots (4 corners 10 px from the edges + centre) on the top layer.
+        // Not clickable, so they never swallow a touch. Each press logs the distance to the nearest dot.
+        for (const auto& t : kTouchTargets) {
+            lv_obj_t* dot = lv_obj_create(lv_layer_top());
+            lv_obj_set_size(dot, 8, 8);
+            lv_obj_set_pos(dot, t.x - 4, t.y - 4);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_border_width(dot, 0, 0);
+            lv_obj_set_style_pad_all(dot, 0, 0);
+            lv_obj_set_style_bg_color(dot, lv_color_hex(0xFFEB3B), 0);
+            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+        }
 #endif
     }
 
@@ -152,6 +167,9 @@ private:
         }
         ESP_LOGI(TAG, "Touch PTT %s at (%d, %d) t=%lld ms", event_name, static_cast<int>(p.x),
                  static_cast<int>(p.y), static_cast<long long>(esp_timer_get_time() / 1000));
+        if (code == LV_EVENT_PRESSED) {
+            LogNearestTarget(p);
+        }
 #endif
 
         // LVGL callbacks already run with the display lock held; do not take DisplayLockGuard
@@ -176,6 +194,42 @@ private:
         }
         ESP_LOGI(TAG, "Touch screen press at (%d, %d) t=%lld ms", static_cast<int>(p.x),
                  static_cast<int>(p.y), static_cast<long long>(esp_timer_get_time() / 1000));
+        LogNearestTarget(p);
+    }
+
+    struct TouchTarget {
+        int x;
+        int y;
+        const char* name;
+    };
+    static constexpr TouchTarget kTouchTargets[5] = {
+        {10, 10, "top-left"},
+        {DISPLAY_WIDTH - 10, 10, "top-right"},
+        {10, DISPLAY_HEIGHT - 10, "bottom-left"},
+        {DISPLAY_WIDTH - 10, DISPLAY_HEIGHT - 10, "bottom-right"},
+        {DISPLAY_WIDTH / 2, DISPLAY_HEIGHT / 2, "centre"},
+    };
+
+    static void LogNearestTarget(const lv_point_t& p) {
+        const TouchTarget* best = &kTouchTargets[0];
+        int best_d2 = INT32_MAX;
+        for (const auto& t : kTouchTargets) {
+            int dx = p.x - t.x;
+            int dy = p.y - t.y;
+            int d2 = dx * dx + dy * dy;
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best = &t;
+            }
+        }
+        // Report per-axis error and the Euclidean distance (integer sqrt is enough here)
+        int dx = p.x - best->x;
+        int dy = p.y - best->y;
+        int dist = 0;
+        while ((dist + 1) * (dist + 1) <= best_d2) {
+            dist++;
+        }
+        ESP_LOGI(TAG, "Touch target %s dx=%d dy=%d dist=%d px", best->name, dx, dy, dist);
     }
 #endif
 };
