@@ -42,6 +42,18 @@ const PhraseEntry* FindPhrase(std::string_view id) {
 
 }  // namespace
 
+bool PlayBoardPhrase(const char* id) {
+    const PhraseEntry* entry = FindPhrase(id);
+    if (entry == nullptr) {
+        return false;
+    }
+    ESP_LOGI(kTag, "play_phrase id=%s t=%lld ms", entry->id,
+             static_cast<long long>(esp_timer_get_time() / 1000));
+    const std::string_view sound = entry->sound;
+    Application::GetInstance().Schedule([sound]() { Application::GetInstance().PlaySound(sound); });
+    return true;
+}
+
 void RegisterBanBanhMiDeviceTools(Display* display) {
     auto& mcp_server = McpServer::GetInstance();
 
@@ -52,17 +64,9 @@ void RegisterBanBanhMiDeviceTools(Display* display) {
         PropertyList({Property("id", kPropertyTypeString)}),
         [](const PropertyList& properties) -> ToolResult {
             const auto& id = properties["id"].value<std::string>();
-            const PhraseEntry* entry = FindPhrase(id);
-            if (entry == nullptr) {
+            if (!PlayBoardPhrase(id.c_str())) {
                 return std::unexpected("unknown phrase id");
             }
-
-            ESP_LOGI(kTag, "play_phrase id=%s t=%lld ms", entry->id,
-                     static_cast<long long>(esp_timer_get_time() / 1000));
-
-            const std::string_view sound = entry->sound;
-            Application::GetInstance().Schedule(
-                [sound]() { Application::GetInstance().PlaySound(sound); });
             return true;
         });
 

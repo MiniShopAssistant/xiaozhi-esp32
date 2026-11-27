@@ -2,6 +2,7 @@
 #include "button.h"
 #include "codecs/es8311_audio_codec.h"
 #include "config.h"
+#include "connectivity.h"
 #include "device_tools.h"
 #include "display/lcd_display.h"
 #include "wifi_board.h"
@@ -163,6 +164,16 @@ public:
 #endif
     }
 
+    // Called from the connectivity monitor task: show or clear "lost connection, retrying".
+    void SetOffline(bool offline) {
+        DisplayLockGuard lock(this);
+        offline_ = offline;
+        if (ptt_btn_ == nullptr || ptt_label_ == nullptr || ptt_pressed_) {
+            return;
+        }
+        ShowIdleState();
+    }
+
     void SetChatMessage(const char* role, const char* content) override {
         SpiLcdDisplay::SetChatMessage(role, content);
         // The parent re-aligns the multiline chat bar to the screen bottom on every update.
@@ -192,9 +203,19 @@ private:
         }
     }
     static constexpr uint32_t kPttActiveColorHex = 0xD32F2F;
+    static constexpr uint32_t kPttOfflineColorHex = 0x546E7A;
 
     lv_obj_t* ptt_btn_ = nullptr;
     lv_obj_t* ptt_label_ = nullptr;
+    bool offline_ = false;
+    // true between an accepted press and its release: a rejected press (offline) never starts a turn
+    bool ptt_pressed_ = false;
+
+    // Caller must hold the display lock.
+    void ShowIdleState() {
+        lv_obj_set_style_bg_color(ptt_btn_, lv_color_hex(offline_ ? kPttOfflineColorHex : kPttIdleColorHex), 0);
+        lv_label_set_text(ptt_label_, offline_ ? "Mất kết nối, đang thử lại" : "Giữ để nói");
+    }
 
     static void PttEventCb(lv_event_t* e) {
         auto* self = static_cast<Es3c28pDisplay*>(lv_event_get_user_data(e));
@@ -221,12 +242,21 @@ private:
 
         // LVGL callbacks already run with the display lock held; do not take DisplayLockGuard
         if (code == LV_EVENT_PRESSED) {
+            if (IsServerOffline()) {
+                // FR-028: no conversation while the server is unreachable, say so instead
+                PlayBoardPhrase("offline");
+                return;
+            }
+            self->ptt_pressed_ = true;
             lv_obj_set_style_bg_color(self->ptt_btn_, lv_color_hex(kPttActiveColorHex), 0);
             lv_label_set_text(self->ptt_label_, "Đang nghe…");
             Application::GetInstance().StartListening();
         } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-            lv_obj_set_style_bg_color(self->ptt_btn_, lv_color_hex(kPttIdleColorHex), 0);
-            lv_label_set_text(self->ptt_label_, "Giữ để nói");
+            if (!self->ptt_pressed_) {
+                return;
+            }
+            self->ptt_pressed_ = false;
+            self->ShowIdleState();
             Application::GetInstance().StopListening();
         }
     }
@@ -285,6 +315,7 @@ class BanBanhMiEs3c28pBoard : public WifiBoard {
 private:
     i2c_master_bus_handle_t i2c_bus_ = nullptr;
     Button boot_button_;
+    bool boot_talking_ = false;
     LcdDisplay* display_ = nullptr;
 
     void InitializeI2c() {
@@ -415,15 +446,19 @@ private:
             if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
                 return;
             }
+            if (IsServerOffline()) {
+                PlayBoardPhrase("offline");
+                return;
+            }
+            boot_talking_ = true;
             app.StartListening();
         });
         boot_button_.OnPressUp([this]() {
-            auto& app = Application::GetInstance();
-            auto state = app.GetDeviceState();
-            if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
+            if (!boot_talking_) {
                 return;
             }
-            app.StopListening();
+            boot_talking_ = false;
+            Application::GetInstance().StopListening();
         });
     }
 
@@ -437,6 +472,9 @@ public:
         InitializeButtons();
         GetBacklight()->SetBrightness(100);
         RegisterBanBanhMiDeviceTools(display_);
+        StartConnectivityMonitor([this](bool offline) {
+            static_cast<Es3c28pDisplay*>(display_)->SetOffline(offline);
+        });
     }
 
     virtual AudioCodec* GetAudioCodec() override {
