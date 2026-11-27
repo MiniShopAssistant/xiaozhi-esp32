@@ -21,10 +21,10 @@ Board tùy chỉnh cho mạch **LCDWIKI ES3C28P** (ESP32-S3 N16R8):
 ## Cách build
 
 ```bash
-python scripts/build.py banbanhmi-es3c28p --language vi-VN --wake-word hiesp
+python scripts/build.py banbanhmi-es3c28p --language vi-VN --wake-word wn9_hilili_tts
 ```
 
-Lệnh trên bật wake word AFE `"Hi,ESP"` (`wn9_hiesp`), gửi dữ liệu âm thanh wake word (`CONFIG_SEND_WAKE_WORD_DATA=y`), tắt AEC (chế độ nghe `auto`) và tắt nhận diện wake word khi đang nghe (`CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=n`). Khi vào trạng thái nghe rảnh tay, màn hình hiển thị tín hiệu trực quan (không phát âm thanh để tránh mic thu lại) và vẫn giữ vùng **"Giữ để nói"** hoạt động bình thường.
+Lệnh trên bật wake word AFE `"Hi,Lily"` (`wn9_hilili_tts`), gửi dữ liệu âm thanh wake word (`CONFIG_SEND_WAKE_WORD_DATA=y`), tắt AEC (chế độ nghe `auto`) và tắt nhận diện wake word khi đang nghe (`CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=n`). Khi vào trạng thái nghe rảnh tay, màn hình hiển thị tín hiệu trực quan (không phát âm thanh để tránh mic thu lại) và vẫn giữ vùng **"Giữ để nói"** hoạt động bình thường.
 
 Để bật chế độ kiểm tra cảm ứng (ghi log tọa độ và sự kiện nhấn/thả qua serial), bật `CONFIG_BANBANHMI_TOUCH_TEST` trong `idf.py menuconfig` tại mục **Xiaozhi Assistant → BanBanhMi ES3C28P**.
 
