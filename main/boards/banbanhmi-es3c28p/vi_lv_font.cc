@@ -126,3 +126,7 @@ lv_font_t MakeLvFont(const vi_font_t* vi_font) {
 const lv_font_t kViFont38 = MakeLvFont(&font_vi_38);
 const lv_font_t kViFont20 = MakeLvFont(&font_vi_20);
 const lv_font_t kViFontDigits72 = MakeLvFont(&font_digits_72);
+
+bool ViFont20HasGlyph(uint32_t codepoint) {
+    return FindGlyphIndex(&font_vi_20, codepoint) >= 0;
+}

@@ -21,13 +21,16 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #define TAG "BanBanhMiEs3c28p"
 
 static constexpr float kMicGainDb = 42.0f;
+static constexpr int kSpeakerVolume = 100;
 
 // Latency probe for `pnpm device:latency` (spec 007 T070, research R11). One line when the finger is lifted
 // and one when the first frame of the spoken answer is written to the speaker; the server joins them
@@ -88,7 +91,7 @@ static const ili9341_lcd_init_cmd_t kVendorSpecificInit[] = {
 };
 
 // ES8311 codec for this board with two changes, both kept inside the board directory:
-//  - the first 300 ms after the input is switched on are muted: the ADC start-up produces a large
+//  - the first 100 ms after the input is switched on are muted: the ADC start-up produces a large
 //    low-frequency step (measured: -25 dBFS, 94% of the energy under 100 Hz, peak -8 dBFS) that the
 //    STT model "recognised" as a word when nobody was speaking;
 //  - the microphone gain is raised to 42 dB (default 30 dB): speech was only about 10 dB above the
@@ -118,11 +121,80 @@ public:
     }
 
 private:
-    static constexpr int64_t kInputBlankUs = 300 * 1000;
+    static constexpr int64_t kInputBlankUs = 100 * 1000;
     int64_t blank_until_us_ = 0;
 };
 
 class Es3c28pDisplay : public SpiLcdDisplay {
+private:
+    // Landscape 320x240 conversation layout constants:
+    // top bar (28) + reply area (84) + heard area (84) + PTT bar (44) = 240 px.
+    static constexpr int kTopBarHeight = 28;
+    static constexpr int kPttHeight = 44;
+    static constexpr int kBodyHeight = DISPLAY_HEIGHT - kTopBarHeight - kPttHeight;  // 168 px
+
+    static constexpr int kTopBarPadX = 8;
+    static constexpr int kTopIconSize = 20;
+    static constexpr int kTopBarGap = 6;
+    static constexpr int kStateLabelX = kTopBarPadX + kTopIconSize + kTopBarGap;  // 34 px
+    static constexpr int kOnlineDotSize = 10;
+    static constexpr int kOnlineDotMarginRight = 8;
+    static constexpr int kStateLabelMaxWidth =
+        DISPLAY_WIDTH - kStateLabelX - kOnlineDotMarginRight - kOnlineDotSize - kTopBarGap;  // 262 px
+    static constexpr int kStateLabelMaxHeight = 24;  // 1 line of kViFont20 (line_height = 24)
+    static constexpr int kCountdownUnitOffsetRight =
+        kOnlineDotMarginRight + kOnlineDotSize + kTopBarGap;  // 24 px
+    static constexpr int kCountdownDigitWidth = 28;
+    static constexpr int kCountdownDigitOffsetRight =
+        kCountdownUnitOffsetRight + 44;  // leaves 4 px gap before "giây" (~40 px wide)
+
+    static constexpr int kBodyPadY = 2;
+    static constexpr int kBubbleGapY = 4;
+    static constexpr int kBubbleHeight =
+        (kBodyHeight - 2 * kBodyPadY - kBubbleGapY) / 2;  // 80 px (each area = 84 px incl. margins)
+    static constexpr int kBubbleMarginX = 8;
+    static constexpr int kBubbleWidth = 272;
+    static constexpr int kBubbleRadius = 10;
+    static constexpr int kBubbleStripeWidth = 4;
+    static constexpr int kBubbleBorderWidth = 1;
+    static constexpr int kBubblePadX = 8;
+    static constexpr int kReplyLabelWidth =
+        kBubbleWidth - kBubbleStripeWidth - 2 * kBubblePadX;  // 252 px
+    static constexpr int kHeardLabelWidth =
+        kBubbleWidth - 2 * kBubbleBorderWidth - 2 * kBubblePadX;  // 254 px
+    static constexpr int kBubbleTextMaxHeight = 3 * 24;           // 3 lines of kViFont20
+
+    static constexpr uint32_t kCountdownIntervalMs = 1000;
+    static constexpr int kCountdownUrgentThreshold = 3;
+
+    // Theme colours per state: bg = body, sep = lighter reply bubble fill, bar = darker heard
+    // bubble and top bar fill, accent = reply left stripe and dim placeholder text.
+    struct StatePalette {
+        uint32_t bg;
+        uint32_t bar;
+        uint32_t sep;
+        uint32_t accent;
+    };
+
+    static constexpr StatePalette kPaletteClosed = {0x263238, 0x1C252A, 0x37474F, 0xB0BEC5};
+    static constexpr StatePalette kPaletteListening = {0x1B5E20, 0x124116, 0x2E7D32, 0xA5D6A7};
+    static constexpr StatePalette kPaletteProcessing = {0xE65100, 0xBF360C, 0xF57C00, 0xFFE0B2};
+    static constexpr StatePalette kPaletteAwaitingOk = {0x0D47A1, 0x082E6B, 0x1976D2, 0xBBDEFB};
+    static constexpr StatePalette kPaletteOffline = {0x546E7A, 0x455A64, 0x607D8B, 0xCFD8DC};
+
+    static constexpr uint32_t kColorWhite = 0xFFFFFF;
+    static constexpr uint32_t kColorUrgentYellow = 0xFFF59D;
+    static constexpr uint32_t kColorOnlineDot = 0x66BB6A;
+    static constexpr uint32_t kColorOfflineDot = 0xEF5350;
+
+    static constexpr uint32_t kPttIdleColorHex = 0x1E88E5;
+    static constexpr uint32_t kPttActiveColorHex = 0xD32F2F;
+    static constexpr uint32_t kPttListeningColorHex = 0x2E7D32;
+    static constexpr uint32_t kPttOfflineColorHex = 0x546E7A;
+
+    static constexpr const char* kReplyPlaceholder = "Máy sẽ trả lời ở đây";
+    static constexpr const char* kHeardPlaceholder = "Bạn nói, tôi nghe";
+
 public:
     enum class StatusState {
         kClosed,
@@ -148,13 +220,13 @@ public:
         DisplayLockGuard lock(this);
         lv_obj_t* screen = lv_screen_active();
 
-        // Full-screen landscape status overlay (320x240); hidden only during Wi-Fi/OTA setup.
+        // Full-screen landscape conversation overlay (320x240); hidden only during Wi-Fi/OTA setup.
         status_root_ = lv_obj_create(screen);
         InitPlainBox(status_root_, DISPLAY_WIDTH, DISPLAY_HEIGHT);
         lv_obj_set_pos(status_root_, 0, 0);
         lv_obj_set_style_bg_opa(status_root_, LV_OPA_COVER, 0);
 
-        // Top bar (24 px): centered "BanBanhMi" title + online/offline dot at right
+        // Top bar (28 px): [state icon 20 px] [state word 20 px] ... [countdown] [online dot]
         header_bar_ = lv_obj_create(status_root_);
         InitPlainBox(header_bar_, DISPLAY_WIDTH, kTopBarHeight);
         lv_obj_set_pos(header_bar_, 0, 0);
@@ -162,10 +234,32 @@ public:
         lv_obj_set_style_border_width(header_bar_, 1, 0);
         lv_obj_set_style_border_side(header_bar_, LV_BORDER_SIDE_BOTTOM, 0);
 
-        header_title_ = lv_label_create(header_bar_);
-        lv_label_set_text(header_title_, "BanBanhMi");
-        lv_obj_set_style_text_font(header_title_, &kViFont20, 0);
-        lv_obj_center(header_title_);
+        icon_box_ = lv_obj_create(header_bar_);
+        InitPlainBox(icon_box_, kTopIconSize, kTopIconSize);
+        lv_obj_align(icon_box_, LV_ALIGN_LEFT_MID, kTopBarPadX, 0);
+        lv_obj_set_style_bg_opa(icon_box_, LV_OPA_TRANSP, 0);
+        BuildStateIcons();
+
+        state_label_ = lv_label_create(header_bar_);
+        lv_obj_set_width(state_label_, kStateLabelMaxWidth);
+        lv_obj_set_style_text_font(state_label_, &kViFont20, 0);
+        lv_obj_set_style_text_color(state_label_, lv_color_hex(kColorWhite), 0);
+        lv_obj_set_style_text_align(state_label_, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_max_height(state_label_, kStateLabelMaxHeight, 0);
+        lv_label_set_long_mode(state_label_, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_align(state_label_, LV_ALIGN_LEFT_MID, kStateLabelX, 0);
+
+        countdown_unit_label_ = lv_label_create(header_bar_);
+        lv_label_set_text(countdown_unit_label_, "giây");
+        lv_obj_set_style_text_font(countdown_unit_label_, &kViFont20, 0);
+        lv_obj_set_style_text_align(countdown_unit_label_, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(countdown_unit_label_, LV_ALIGN_RIGHT_MID, -kCountdownUnitOffsetRight, 0);
+
+        countdown_label_ = lv_label_create(header_bar_);
+        lv_obj_set_width(countdown_label_, kCountdownDigitWidth);
+        lv_obj_set_style_text_font(countdown_label_, &kViFont20, 0);
+        lv_obj_set_style_text_align(countdown_label_, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(countdown_label_, LV_ALIGN_RIGHT_MID, -kCountdownDigitOffsetRight, 0);
 
         online_dot_ = lv_obj_create(header_bar_);
         InitPlainBox(online_dot_, kOnlineDotSize, kOnlineDotSize);
@@ -173,76 +267,46 @@ public:
         lv_obj_set_style_bg_opa(online_dot_, LV_OPA_COVER, 0);
         lv_obj_align(online_dot_, LV_ALIGN_RIGHT_MID, -kOnlineDotMarginRight, 0);
 
-        // Middle body (172 px): left panel (212 px) + right panel (108 px)
+        // Conversation body (168 px): reply bubble on top (left), heard bubble on bottom (right)
         body_ = lv_obj_create(status_root_);
         InitPlainBox(body_, DISPLAY_WIDTH, kBodyHeight);
         lv_obj_set_pos(body_, 0, kTopBarHeight);
         lv_obj_set_style_bg_opa(body_, LV_OPA_COVER, 0);
 
-        left_panel_ = lv_obj_create(body_);
-        InitPlainBox(left_panel_, kLeftPanelWidth, kBodyHeight);
-        lv_obj_set_pos(left_panel_, 0, 0);
-        lv_obj_set_style_bg_opa(left_panel_, LV_OPA_TRANSP, 0);
+        // Reply bubble (left-aligned, lighter fill, 4 px left accent stripe)
+        reply_bubble_ = lv_obj_create(body_);
+        InitPlainBox(reply_bubble_, kBubbleWidth, kBubbleHeight);
+        lv_obj_set_pos(reply_bubble_, kBubbleMarginX, kBodyPadY);
+        lv_obj_set_style_radius(reply_bubble_, kBubbleRadius, 0);
+        lv_obj_set_style_bg_opa(reply_bubble_, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(reply_bubble_, kBubbleStripeWidth, 0);
+        lv_obj_set_style_border_side(reply_bubble_, LV_BORDER_SIDE_LEFT, 0);
 
-        // State icon container (56x38 px) with pre-built shapes for each state
-        icon_box_ = lv_obj_create(left_panel_);
-        InitPlainBox(icon_box_, kIconBoxWidth, kIconBoxHeight);
-        lv_obj_align(icon_box_, LV_ALIGN_TOP_MID, 0, kIconTopY);
-        lv_obj_set_style_bg_opa(icon_box_, LV_OPA_TRANSP, 0);
-        BuildStateIcons();
+        reply_label_ = lv_label_create(reply_bubble_);
+        lv_obj_set_width(reply_label_, kReplyLabelWidth);
+        lv_obj_set_style_text_font(reply_label_, &kViFont20, 0);
+        lv_obj_set_style_text_align(reply_label_, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_max_height(reply_label_, kBubbleTextMaxHeight, 0);
+        lv_label_set_long_mode(reply_label_, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_align(reply_label_, LV_ALIGN_LEFT_MID, kBubblePadX, 0);
 
-        // Big state word (38 px bold; switches to 20 px wrap for the longer offline message)
-        state_label_ = lv_label_create(left_panel_);
-        lv_obj_set_width(state_label_, kLeftInnerWidth);
-        lv_obj_set_style_text_font(state_label_, &kViFont38, 0);
-        lv_obj_set_style_text_color(state_label_, lv_color_hex(kColorWhite), 0);
-        lv_obj_set_style_text_align(state_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_max_height(state_label_, kStateLabelMaxHeight, 0);
-        lv_label_set_long_mode(state_label_, LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_align(state_label_, LV_ALIGN_TOP_MID, 0, kStateLabelY);
+        // Heard bubble (right-aligned, darker fill, subtle 1 px border)
+        heard_bubble_ = lv_obj_create(body_);
+        InitPlainBox(heard_bubble_, kBubbleWidth, kBubbleHeight);
+        lv_obj_set_pos(heard_bubble_, DISPLAY_WIDTH - kBubbleMarginX - kBubbleWidth,
+                       kBodyPadY + kBubbleHeight + kBubbleGapY);
+        lv_obj_set_style_radius(heard_bubble_, kBubbleRadius, 0);
+        lv_obj_set_style_bg_opa(heard_bubble_, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(heard_bubble_, kBubbleBorderWidth, 0);
+        lv_obj_set_style_border_side(heard_bubble_, LV_BORDER_SIDE_FULL, 0);
 
-        // Caption ("Gọi tên để bắt đầu" / "vừa nghe" / "Nói ok để chốt đơn")
-        caption_label_ = lv_label_create(left_panel_);
-        lv_obj_set_width(caption_label_, kLeftInnerWidth);
-        lv_obj_set_style_text_font(caption_label_, &kViFont20, 0);
-        lv_obj_set_style_text_align(caption_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_long_mode(caption_label_, LV_LABEL_LONG_MODE_DOTS);
-        lv_obj_align(caption_label_, LV_ALIGN_TOP_MID, 0, kCaptionY);
-
-        // Up to 2 lines of the heard text (20 px)
-        heard_label_ = lv_label_create(left_panel_);
-        lv_obj_set_width(heard_label_, kLeftInnerWidth);
+        heard_label_ = lv_label_create(heard_bubble_);
+        lv_obj_set_width(heard_label_, kHeardLabelWidth);
         lv_obj_set_style_text_font(heard_label_, &kViFont20, 0);
-        lv_obj_set_style_text_color(heard_label_, lv_color_hex(kColorSoftWhite), 0);
-        lv_obj_set_style_text_align(heard_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_max_height(heard_label_, kHeardLabelMaxHeight, 0);
+        lv_obj_set_style_text_align(heard_label_, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_style_max_height(heard_label_, kBubbleTextMaxHeight, 0);
         lv_label_set_long_mode(heard_label_, LV_LABEL_LONG_MODE_DOTS);
-        lv_obj_align(heard_label_, LV_ALIGN_TOP_MID, 0, kHeardLabelY);
-
-        // Right panel (108 px): countdown in awaiting_ok, short hint in other states
-        right_panel_ = lv_obj_create(body_);
-        InitPlainBox(right_panel_, kRightPanelWidth, kBodyHeight);
-        lv_obj_set_pos(right_panel_, kLeftPanelWidth, 0);
-        lv_obj_set_style_bg_opa(right_panel_, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(right_panel_, 1, 0);
-        lv_obj_set_style_border_side(right_panel_, LV_BORDER_SIDE_LEFT, 0);
-
-        countdown_label_ = lv_label_create(right_panel_);
-        lv_obj_set_style_text_font(countdown_label_, &kViFontDigits72, 0);
-        lv_obj_set_style_text_align(countdown_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(countdown_label_, LV_ALIGN_CENTER, 0, kCountdownDigitOffsetY);
-
-        countdown_unit_label_ = lv_label_create(right_panel_);
-        lv_label_set_text(countdown_unit_label_, "giây");
-        lv_obj_set_style_text_font(countdown_unit_label_, &kViFont20, 0);
-        lv_obj_set_style_text_align(countdown_unit_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(countdown_unit_label_, LV_ALIGN_CENTER, 0, kCountdownUnitOffsetY);
-
-        right_hint_label_ = lv_label_create(right_panel_);
-        lv_obj_set_width(right_hint_label_, kRightPanelWidth - 8);
-        lv_obj_set_style_text_font(right_hint_label_, &kViFont20, 0);
-        lv_obj_set_style_text_align(right_hint_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(right_hint_label_);
+        lv_obj_align(heard_label_, LV_ALIGN_RIGHT_MID, -kBubblePadX, 0);
 
         // Bottom bar (44 px): full-width hold-to-talk button (FR-009 fallback)
         ptt_btn_ = lv_obj_create(status_root_);
@@ -271,8 +335,8 @@ public:
         lv_obj_add_flag(status_root_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_flag(header_bar_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_flag(body_, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_add_flag(left_panel_, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_add_flag(right_panel_, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_add_flag(reply_bubble_, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_add_flag(heard_bubble_, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_add_event_cb(screen, ScreenTouchTestCb, LV_EVENT_PRESSED, this);
 
         // Five target dots (4 corners 10 px from the edges + centre) on the top layer.
@@ -308,7 +372,23 @@ public:
 
         status_state_ = mapped;
         server_status_active_ = (mapped != StatusState::kClosed);
-        heard_text_ = (mapped == StatusState::kClosed) ? std::string() : text;
+
+        if (mapped == StatusState::kClosed) {
+            heard_text_.clear();
+            reply_text_.clear();
+        } else {
+            const std::string next_heard =
+                IsFallbackStatusText(text) ? std::string() : SanitizeForViFont(text);
+            // Clear the previous reply when a new seller utterance arrives so it does not linger
+            // beside a fresh request.
+            const bool is_new_heard =
+                !next_heard.empty() && next_heard != heard_text_ &&
+                (mapped == StatusState::kListening || mapped == StatusState::kProcessing);
+            if (is_new_heard) {
+                reply_text_.clear();
+            }
+            heard_text_ = next_heard;
+        }
 
         if (mapped == StatusState::kAwaitingOk && countdown_s > 0) {
             countdown_remaining_ = countdown_s;
@@ -371,68 +451,28 @@ public:
         }
     }
 
+    // Receives the board's spoken sentence (`tts sentence_start`) and `self.screen.show_text`.
+    // Keeps the text visible in the reply bubble after speaking ends until a new heard sentence
+    // arrives or the session closes.
     void SetChatMessage(const char* role, const char* content) override {
         SpiLcdDisplay::SetChatMessage(role, content);
+        if (role == nullptr || std::strcmp(role, "assistant") != 0) {
+            return;
+        }
+        DisplayLockGuard lock(this);
+        if (content == nullptr || content[0] == '\0') {
+            reply_text_.clear();
+        } else {
+            reply_text_ = SanitizeForViFont(content);
+        }
+        ApplyVisualState();
     }
 
 private:
-    // Landscape 320x240 layout constants
-    static constexpr int kTopBarHeight = 24;
-    static constexpr int kPttHeight = 44;
-    static constexpr int kBodyHeight = DISPLAY_HEIGHT - kTopBarHeight - kPttHeight;  // 172 px
-    static constexpr int kLeftPanelWidth = 212;
-    static constexpr int kRightPanelWidth = DISPLAY_WIDTH - kLeftPanelWidth;  // 108 px
-    static constexpr int kLeftPadX = 6;
-    static constexpr int kLeftInnerWidth = kLeftPanelWidth - 2 * kLeftPadX;  // 200 px
-
-    static constexpr int kIconBoxWidth = 56;
-    static constexpr int kIconBoxHeight = 38;
-    static constexpr int kIconTopY = 6;
-    static constexpr int kStateLabelY = 46;
-    static constexpr int kStateLabelMaxHeight = 48;
-    static constexpr int kCaptionY = 94;
-    static constexpr int kHeardLabelY = 120;
-    static constexpr int kHeardLabelMaxHeight = 48;  // 2 lines of kViFont20 (line_height = 24)
-
-    static constexpr int kOnlineDotSize = 10;
-    static constexpr int kOnlineDotMarginRight = 10;
-    static constexpr int kCountdownDigitOffsetY = -14;
-    static constexpr int kCountdownUnitOffsetY = 42;
-    static constexpr uint32_t kCountdownIntervalMs = 1000;
-    static constexpr int kCountdownUrgentThreshold = 3;
-
-    // Theme colours per state (matching Wokwi preview ui.c)
-    struct StatePalette {
-        uint32_t bg;
-        uint32_t bar;
-        uint32_t sep;
-        uint32_t accent;
-    };
-
-    static constexpr StatePalette kPaletteClosed = {0x263238, 0x1C252A, 0x37474F, 0xB0BEC5};
-    static constexpr StatePalette kPaletteListening = {0x1B5E20, 0x124116, 0x2E7D32, 0xA5D6A7};
-    static constexpr StatePalette kPaletteProcessing = {0xE65100, 0xBF360C, 0xF57C00, 0xFFE0B2};
-    static constexpr StatePalette kPaletteAwaitingOk = {0x0D47A1, 0x082E6B, 0x1976D2, 0xBBDEFB};
-    static constexpr StatePalette kPaletteOffline = {0x546E7A, 0x455A64, 0x607D8B, 0xCFD8DC};
-
-    static constexpr uint32_t kColorWhite = 0xFFFFFF;
-    static constexpr uint32_t kColorSoftWhite = 0xECEFF1;
-    static constexpr uint32_t kColorUrgentYellow = 0xFFF59D;
-    static constexpr uint32_t kColorOnlineDot = 0x66BB6A;
-    static constexpr uint32_t kColorOfflineDot = 0xEF5350;
-
-    static constexpr uint32_t kPttIdleColorHex = 0x1E88E5;
-    static constexpr uint32_t kPttActiveColorHex = 0xD32F2F;
-    static constexpr uint32_t kPttListeningColorHex = 0x2E7D32;
-    static constexpr uint32_t kPttOfflineColorHex = 0x546E7A;
-
     lv_obj_t* status_root_ = nullptr;
     lv_obj_t* header_bar_ = nullptr;
-    lv_obj_t* header_title_ = nullptr;
     lv_obj_t* online_dot_ = nullptr;
     lv_obj_t* body_ = nullptr;
-    lv_obj_t* left_panel_ = nullptr;
-    lv_obj_t* right_panel_ = nullptr;
 
     lv_obj_t* icon_box_ = nullptr;
     lv_obj_t* icon_closed_ring_ = nullptr;
@@ -442,18 +482,20 @@ private:
     lv_obj_t* icon_offline_ring_ = nullptr;
 
     lv_obj_t* state_label_ = nullptr;
-    lv_obj_t* caption_label_ = nullptr;
-    lv_obj_t* heard_label_ = nullptr;
-
     lv_obj_t* countdown_label_ = nullptr;
     lv_obj_t* countdown_unit_label_ = nullptr;
-    lv_obj_t* right_hint_label_ = nullptr;
+
+    lv_obj_t* reply_bubble_ = nullptr;
+    lv_obj_t* reply_label_ = nullptr;
+    lv_obj_t* heard_bubble_ = nullptr;
+    lv_obj_t* heard_label_ = nullptr;
 
     lv_obj_t* ptt_btn_ = nullptr;
     lv_obj_t* ptt_label_ = nullptr;
 
     lv_timer_t* countdown_timer_ = nullptr;
     StatusState status_state_ = StatusState::kClosed;
+    std::string reply_text_;
     std::string heard_text_;
     int countdown_remaining_ = 0;
     bool countdown_active_ = false;
@@ -473,35 +515,141 @@ private:
         lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
     }
 
-    // Caller must hold the display lock.
+    // Server sends these fixed placeholder texts in `show_status` before any transcript exists.
+    static bool IsFallbackStatusText(const std::string& text) {
+        if (text.empty()) {
+            return true;
+        }
+        static constexpr const char* kFallbackTexts[] = {
+            "Đang nghe…",
+            "Đang xử lý…",
+            "Chờ xác nhận…",
+            "Đã đóng phiên",
+            "Đang nghe...",
+            "Đang xử lý...",
+            "Chờ xác nhận...",
+        };
+        for (const char* fallback : kFallbackTexts) {
+            if (text == fallback) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Replaces common punctuation missing from kViFont20 (such as U+2026 ellipsis, smart quotes,
+    // en/em dashes, currency symbol) and skips any remaining unsupported codepoint so LVGL never
+    // draws missing-glyph boxes.
+    static std::string SanitizeForViFont(const std::string& input) {
+        std::string out;
+        out.reserve(input.size());
+
+        const size_t len = input.size();
+        size_t i = 0;
+        while (i < len) {
+            const uint8_t b0 = static_cast<uint8_t>(input[i]);
+            uint32_t cp = 0;
+            size_t seq_len = 1;
+
+            if (b0 < 0x80u) {
+                cp = b0;
+            } else if ((b0 & 0xE0u) == 0xC0u && i + 1 < len) {
+                const uint8_t b1 = static_cast<uint8_t>(input[i + 1]);
+                if ((b1 & 0xC0u) == 0x80u) {
+                    cp = ((b0 & 0x1Fu) << 6) | (b1 & 0x3Fu);
+                    seq_len = 2;
+                }
+            } else if ((b0 & 0xF0u) == 0xE0u && i + 2 < len) {
+                const uint8_t b1 = static_cast<uint8_t>(input[i + 1]);
+                const uint8_t b2 = static_cast<uint8_t>(input[i + 2]);
+                if ((b1 & 0xC0u) == 0x80u && (b2 & 0xC0u) == 0x80u) {
+                    cp = ((b0 & 0x0Fu) << 12) | ((b1 & 0x3Fu) << 6) | (b2 & 0x3Fu);
+                    seq_len = 3;
+                }
+            } else if ((b0 & 0xF8u) == 0xF0u && i + 3 < len) {
+                const uint8_t b1 = static_cast<uint8_t>(input[i + 1]);
+                const uint8_t b2 = static_cast<uint8_t>(input[i + 2]);
+                const uint8_t b3 = static_cast<uint8_t>(input[i + 3]);
+                if ((b1 & 0xC0u) == 0x80u && (b2 & 0xC0u) == 0x80u && (b3 & 0xC0u) == 0x80u) {
+                    cp = ((b0 & 0x07u) << 18) | ((b1 & 0x3Fu) << 12) | ((b2 & 0x3Fu) << 6) |
+                         (b3 & 0x3Fu);
+                    seq_len = 4;
+                }
+            }
+
+            switch (cp) {
+                case 0x2026u:  // horizontal ellipsis
+                    out.append("...");
+                    break;
+                case 0x2013u:  // en dash
+                case 0x2014u:  // em dash
+                case 0x2212u:  // minus sign
+                    out.push_back('-');
+                    break;
+                case 0x201Cu:  // left double quotation mark
+                case 0x201Du:  // right double quotation mark
+                case 0x00ABu:  // left guillemet
+                case 0x00BBu:  // right guillemet
+                    out.push_back('"');
+                    break;
+                case 0x2018u:  // left single quotation mark
+                case 0x2019u:  // right single quotation mark
+                    out.push_back('\'');
+                    break;
+                case 0x20ABu:          // dong sign -> lowercase d-stroke (U+0111, present in font)
+                    out.append("\xC4\x91");
+                    break;
+                case 0x00D7u:  // multiplication sign
+                    out.push_back('x');
+                    break;
+                case 0x00A0u:  // non-breaking space
+                case '\t':
+                case '\n':
+                    out.push_back(' ');
+                    break;
+                case '\r':
+                case 0:
+                    break;
+                default:
+                    if (ViFont20HasGlyph(cp)) {
+                        out.append(input, i, seq_len);
+                    }
+                    break;
+            }
+            i += seq_len;
+        }
+        return out;
+    }
+
+    // Caller must hold the display lock. All icons fit inside the 20x20 top-bar icon box.
     void BuildStateIcons() {
         // Closed: hollow ring
         icon_closed_ring_ = lv_obj_create(icon_box_);
-        InitPlainBox(icon_closed_ring_, 32, 32);
+        InitPlainBox(icon_closed_ring_, 16, 16);
         lv_obj_set_style_radius(icon_closed_ring_, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_opa(icon_closed_ring_, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(icon_closed_ring_, 4, 0);
+        lv_obj_set_style_border_width(icon_closed_ring_, 3, 0);
         lv_obj_set_style_border_color(icon_closed_ring_, lv_color_hex(kPaletteClosed.accent), 0);
         lv_obj_center(icon_closed_ring_);
 
         // Listening: filled white dot inside semi-transparent halo
         icon_listening_halo_ = lv_obj_create(icon_box_);
-        InitPlainBox(icon_listening_halo_, 36, 36);
+        InitPlainBox(icon_listening_halo_, 18, 18);
         lv_obj_set_style_radius(icon_listening_halo_, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(icon_listening_halo_, lv_color_hex(kPaletteListening.accent), 0);
         lv_obj_set_style_bg_opa(icon_listening_halo_, LV_OPA_40, 0);
         lv_obj_center(icon_listening_halo_);
 
         lv_obj_t* listening_dot = lv_obj_create(icon_listening_halo_);
-        InitPlainBox(listening_dot, 22, 22);
+        InitPlainBox(listening_dot, 10, 10);
         lv_obj_set_style_radius(listening_dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(listening_dot, lv_color_hex(kColorWhite), 0);
         lv_obj_set_style_bg_opa(listening_dot, LV_OPA_COVER, 0);
         lv_obj_center(listening_dot);
 
         // Processing: three horizontal dots
-        static constexpr int kDotOffsets[3] = {-18, 0, 18};
-        static constexpr int kDotSizes[3] = {10, 14, 10};
+        static constexpr int kDotOffsets[3] = {-7, 0, 7};
+        static constexpr int kDotSizes[3] = {5, 7, 5};
         for (int i = 0; i < 3; ++i) {
             icon_processing_dots_[i] = lv_obj_create(icon_box_);
             InitPlainBox(icon_processing_dots_[i], kDotSizes[i], kDotSizes[i]);
@@ -513,35 +661,42 @@ private:
             lv_obj_align(icon_processing_dots_[i], LV_ALIGN_CENTER, kDotOffsets[i], 0);
         }
 
-        // Awaiting OK: ring with "ok" inside
+        // Awaiting OK: white ring with inner target dot
         icon_awaiting_ring_ = lv_obj_create(icon_box_);
-        InitPlainBox(icon_awaiting_ring_, 36, 36);
+        InitPlainBox(icon_awaiting_ring_, 18, 18);
         lv_obj_set_style_radius(icon_awaiting_ring_, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_opa(icon_awaiting_ring_, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(icon_awaiting_ring_, 3, 0);
+        lv_obj_set_style_border_width(icon_awaiting_ring_, 2, 0);
         lv_obj_set_style_border_color(icon_awaiting_ring_, lv_color_hex(kColorWhite), 0);
         lv_obj_center(icon_awaiting_ring_);
 
-        lv_obj_t* ok_lbl = lv_label_create(icon_awaiting_ring_);
-        lv_label_set_text(ok_lbl, "ok");
-        lv_obj_set_style_text_font(ok_lbl, &kViFont20, 0);
-        lv_obj_set_style_text_color(ok_lbl, lv_color_hex(kColorWhite), 0);
-        lv_obj_center(ok_lbl);
+        lv_obj_t* ok_dot = lv_obj_create(icon_awaiting_ring_);
+        InitPlainBox(ok_dot, 8, 8);
+        lv_obj_set_style_radius(ok_dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(ok_dot, lv_color_hex(kColorWhite), 0);
+        lv_obj_set_style_bg_opa(ok_dot, LV_OPA_COVER, 0);
+        lv_obj_center(ok_dot);
 
-        // Offline: ring with "!" inside
+        // Offline: ring with exclamation mark drawn from two boxes so it fits cleanly in 18x18
         icon_offline_ring_ = lv_obj_create(icon_box_);
-        InitPlainBox(icon_offline_ring_, 32, 32);
+        InitPlainBox(icon_offline_ring_, 18, 18);
         lv_obj_set_style_radius(icon_offline_ring_, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_opa(icon_offline_ring_, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(icon_offline_ring_, 3, 0);
+        lv_obj_set_style_border_width(icon_offline_ring_, 2, 0);
         lv_obj_set_style_border_color(icon_offline_ring_, lv_color_hex(kPaletteOffline.accent), 0);
         lv_obj_center(icon_offline_ring_);
 
-        lv_obj_t* bang_lbl = lv_label_create(icon_offline_ring_);
-        lv_label_set_text(bang_lbl, "!");
-        lv_obj_set_style_text_font(bang_lbl, &kViFont20, 0);
-        lv_obj_set_style_text_color(bang_lbl, lv_color_hex(kColorWhite), 0);
-        lv_obj_center(bang_lbl);
+        lv_obj_t* bang_bar = lv_obj_create(icon_offline_ring_);
+        InitPlainBox(bang_bar, 2, 6);
+        lv_obj_set_style_bg_color(bang_bar, lv_color_hex(kColorWhite), 0);
+        lv_obj_set_style_bg_opa(bang_bar, LV_OPA_COVER, 0);
+        lv_obj_align(bang_bar, LV_ALIGN_CENTER, 0, -2);
+
+        lv_obj_t* bang_dot = lv_obj_create(icon_offline_ring_);
+        InitPlainBox(bang_dot, 2, 2);
+        lv_obj_set_style_bg_color(bang_dot, lv_color_hex(kColorWhite), 0);
+        lv_obj_set_style_bg_opa(bang_dot, LV_OPA_COVER, 0);
+        lv_obj_align(bang_dot, LV_ALIGN_CENTER, 0, 4);
     }
 
     // Caller must hold the display lock.
@@ -572,6 +727,21 @@ private:
         }
         set_vis(icon_awaiting_ring_, show_awaiting);
         set_vis(icon_offline_ring_, show_offline);
+    }
+
+    // Caller must hold the display lock.
+    void SetCountdownVisible(bool visible) {
+        if (countdown_label_ == nullptr || countdown_unit_label_ == nullptr) {
+            return;
+        }
+        if (visible) {
+            lv_obj_remove_flag(countdown_label_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(countdown_unit_label_, LV_OBJ_FLAG_HIDDEN);
+            UpdateCountdownLabel();
+        } else {
+            lv_obj_add_flag(countdown_label_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(countdown_unit_label_, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     // Caller must hold the display lock.
@@ -625,66 +795,75 @@ private:
             }
         }
 
-        // Apply palette to header, body, divider, and accent labels
+        // Apply palette to top bar, body, and bubbles
         lv_obj_set_style_bg_color(status_root_, lv_color_hex(pal.bg), 0);
         lv_obj_set_style_bg_color(header_bar_, lv_color_hex(pal.bar), 0);
         lv_obj_set_style_border_color(header_bar_, lv_color_hex(pal.sep), 0);
-        lv_obj_set_style_text_color(header_title_, lv_color_hex(pal.accent), 0);
+        lv_obj_set_style_text_color(countdown_unit_label_, lv_color_hex(pal.accent), 0);
         lv_obj_set_style_bg_color(online_dot_,
                                   lv_color_hex(offline_ ? kColorOfflineDot : kColorOnlineDot), 0);
 
         lv_obj_set_style_bg_color(body_, lv_color_hex(pal.bg), 0);
-        lv_obj_set_style_border_color(right_panel_, lv_color_hex(pal.sep), 0);
-        lv_obj_set_style_text_color(caption_label_, lv_color_hex(pal.accent), 0);
-        lv_obj_set_style_text_color(countdown_unit_label_, lv_color_hex(pal.accent), 0);
-        lv_obj_set_style_text_color(right_hint_label_, lv_color_hex(pal.accent), 0);
+        lv_obj_set_style_bg_color(reply_bubble_, lv_color_hex(pal.sep), 0);
+        lv_obj_set_style_border_color(reply_bubble_, lv_color_hex(pal.accent), 0);
+        lv_obj_set_style_bg_color(heard_bubble_, lv_color_hex(pal.bar), 0);
+        lv_obj_set_style_border_color(heard_bubble_, lv_color_hex(pal.sep), 0);
 
-        // Icon, state text, caption, heard text, and right panel
-        const bool has_heard = !heard_text_.empty();
+        // Top bar state icon, state word, and countdown
         if (show_offline) {
             SetIconVisibility(false, false, false, false, true);
-            lv_obj_set_style_text_font(state_label_, &kViFont20, 0);
             lv_label_set_text(state_label_, "Mất kết nối, đang thử lại");
-            lv_label_set_text(caption_label_, "");
-            lv_label_set_text(heard_label_, "");
-            ShowRightHint("...");
+            SetCountdownVisible(false);
         } else {
-            lv_obj_set_style_text_font(state_label_, &kViFont38, 0);
             switch (effective) {
                 case StatusState::kListening:
                     SetIconVisibility(false, true, false, false, false);
                     lv_label_set_text(state_label_, "Đang nghe");
-                    lv_label_set_text(caption_label_, has_heard ? "vừa nghe" : "");
-                    lv_label_set_text(heard_label_, has_heard ? heard_text_.c_str() : "");
-                    ShowRightHint("Nói\nđơn");
+                    SetCountdownVisible(false);
                     break;
                 case StatusState::kProcessing:
                     SetIconVisibility(false, false, true, false, false);
                     lv_label_set_text(state_label_, "Đang xử lý");
-                    lv_label_set_text(caption_label_, has_heard ? "vừa nghe" : "");
-                    lv_label_set_text(heard_label_, has_heard ? heard_text_.c_str() : "");
-                    ShowRightHint("...");
+                    SetCountdownVisible(false);
                     break;
                 case StatusState::kAwaitingOk:
                     SetIconVisibility(false, false, false, true, false);
                     lv_label_set_text(state_label_, "Chờ ok");
-                    lv_label_set_text(caption_label_, "Nói ok để chốt đơn");
-                    lv_label_set_text(heard_label_, has_heard ? heard_text_.c_str() : "");
-                    if (countdown_active_) {
-                        ShowRightCountdown();
-                    } else {
-                        ShowRightHint("Nói\nok");
-                    }
+                    SetCountdownVisible(countdown_active_);
                     break;
                 case StatusState::kClosed:
                 default:
                     SetIconVisibility(true, false, false, false, false);
                     lv_label_set_text(state_label_, "Đã đóng");
-                    lv_label_set_text(caption_label_, "Gọi tên để bắt đầu");
-                    lv_label_set_text(heard_label_, "");
-                    ShowRightHint("Gọi\nHi Lily");
+                    SetCountdownVisible(false);
                     break;
             }
+        }
+
+        // Reply bubble (top, left): board's last spoken sentence or dim placeholder
+        if (!reply_text_.empty()) {
+            lv_obj_set_style_text_color(reply_label_, lv_color_hex(kColorWhite), 0);
+            lv_label_set_text(reply_label_, reply_text_.c_str());
+        } else {
+            lv_obj_set_style_text_color(reply_label_, lv_color_hex(pal.accent), 0);
+            lv_label_set_text(reply_label_, kReplyPlaceholder);
+        }
+
+        // Heard bubble (bottom, right): seller's utterance (with trailing "..." when processing)
+        // or dim placeholder
+        if (!heard_text_.empty()) {
+            lv_obj_set_style_text_color(heard_label_, lv_color_hex(kColorWhite), 0);
+            if (!show_offline && effective == StatusState::kProcessing &&
+                (heard_text_.size() < 3 ||
+                 heard_text_.compare(heard_text_.size() - 3, 3, "...") != 0)) {
+                std::string processing_text = heard_text_ + "...";
+                lv_label_set_text(heard_label_, processing_text.c_str());
+            } else {
+                lv_label_set_text(heard_label_, heard_text_.c_str());
+            }
+        } else {
+            lv_obj_set_style_text_color(heard_label_, lv_color_hex(pal.accent), 0);
+            lv_label_set_text(heard_label_, kHeardPlaceholder);
         }
 
         // Bottom PTT bar (keeps its pressed red colour)
@@ -701,22 +880,6 @@ private:
             lv_obj_set_style_bg_color(ptt_btn_, lv_color_hex(kPttIdleColorHex), 0);
             lv_label_set_text(ptt_label_, "Giữ để nói");
         }
-    }
-
-    // Caller must hold the display lock.
-    void ShowRightHint(const char* hint) {
-        lv_obj_add_flag(countdown_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(countdown_unit_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(right_hint_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(right_hint_label_, hint);
-    }
-
-    // Caller must hold the display lock.
-    void ShowRightCountdown() {
-        lv_obj_add_flag(right_hint_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(countdown_label_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(countdown_unit_label_, LV_OBJ_FLAG_HIDDEN);
-        UpdateCountdownLabel();
     }
 
     static void CountdownTimerCb(lv_timer_t* timer) {
@@ -1034,6 +1197,9 @@ public:
             AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR, true, true);
         static const bool gain_set = (audio_codec.SetInputGain(kMicGainDb), true);
         (void)gain_set;
+        // Speaker at full volume (stored volume in NVS would otherwise win).
+        static const bool vol_set = (audio_codec.SetOutputVolume(kSpeakerVolume), true);
+        (void)vol_set;
         return &audio_codec;
     }
 

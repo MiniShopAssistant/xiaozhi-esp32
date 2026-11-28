@@ -4,19 +4,24 @@ Board tùy chỉnh cho mạch **LCDWIKI ES3C28P** (ESP32-S3 N16R8):
 - Màn hình SPI **ILI9341V** 2.8" ngang 320x240 (`DISPLAY_SWAP_XY=true`, `DISPLAY_MIRROR_X=true`, `DISPLAY_MIRROR_Y=false`)
 - Cảm ứng điện dung **FT6336G** (chung bus I2C với codec, ánh xạ tọa độ khớp hướng màn hình ngang)
 - Audio codec **ES8311** + mạch khuếch đại loa **FM8002E**
-- Màn hình trạng thái rảnh tay gồm thanh trên 24 px (`BanBanhMi` + chấm trạng thái kết nối), vùng giữa chia hai cột (cột trái 212 px: biểu tượng + tên trạng thái 38 px + chữ `vừa nghe` và tối đa 2 dòng nội dung; cột phải 108 px: số đếm ngược 72 px + `giây` khi ở `awaiting_ok` hoặc gợi ý ngắn ở các trạng thái khác), và thanh dưới 44 px là nút cảm ứng **"Giữ để nói"** (FR-009 dự phòng). Nút **BOOT** vẫn dùng làm nút nhấn-giữ dự phòng (và nhấn khi khởi động để vào chế độ cấu hình Wi-Fi).
+- Màn hình hội thoại ngang 320x240 gồm:
+  - Thanh trạng thái trên cùng 28 px: biểu tượng trạng thái (20 px) + tên trạng thái (20 px đậm) + bộ đếm ngược (`<số> giây`, tô vàng khi `<= 3 giây`) khi ở `awaiting_ok` + chấm trạng thái kết nối bên phải.
+  - Vùng hội thoại giữa 168 px chia hai khung bong bóng (mỗi vùng 84 px, bong bóng rộng 272 px, bo góc 10 px, tối đa 3 dòng `kViFont20`, tràn rút gọn `...`):
+    - Bong bóng trên (căn trái, nền sáng hơn, vạch nhấn 4 px bên trái): câu trả lời gần nhất của máy (từ `tts sentence_start` / `self.screen.show_text`); khi trống hiện chữ mờ `"Máy sẽ trả lời ở đây"`. Giữ nguyên sau khi đọc xong, chỉ xoá khi có câu nghe mới từ người bán hoặc khi phiên đóng (`closed`).
+    - Bong bóng dưới (căn phải, nền đậm hơn): câu vừa nghe của người bán (từ `self.screen.show_status`); khi trống hoặc nhận chuỗi mặc định (`"Đang nghe…"`, `"Đang xử lý…"`, `"Chờ xác nhận…"`, `"Đã đóng phiên"`) hiện chữ mờ `"Bạn nói, tôi nghe"`; khi ở `processing` tự thêm `"..."` ở cuối.
+  - Thanh dưới 44 px là nút cảm ứng **"Giữ để nói"** (FR-009 dự phòng). Nút **BOOT** vẫn dùng làm nút nhấn-giữ dự phòng (và nhấn khi khởi động để vào chế độ cấu hình Wi-Fi).
 
 ## Trạng thái màn hình
 
-Mỗi trạng thái kết hợp đồng thời **màu nền, biểu tượng và chữ tiếng Việt** (không dùng màu làm tín hiệu duy nhất):
+Mỗi trạng thái kết hợp đồng thời **màu nền, biểu tượng và chữ tiếng Việt**; hai bong bóng hội thoại phân biệt bằng **vị trí trái/phải, độ đậm nền và vạch nhấn 4 px** (không dùng màu làm tín hiệu duy nhất):
 
-| Trạng thái (`state`) | Màu nền | Chữ trạng thái | Cột phải |
+| Trạng thái (`state`) | Màu nền | Thanh trên (biểu tượng + chữ) | Bộ đếm ngược |
 | --- | --- | --- | --- |
-| `closed` | Xám đen (`#263238`) | `Đã đóng` / `Gọi tên để bắt đầu` | `Gọi Hi Lily` |
-| `listening` | Xanh lá (`#1B5E20`) | `Đang nghe` + `vừa nghe` | `Nói đơn` |
-| `processing` | Cam (`#E65100`) | `Đang xử lý` + `vừa nghe` | `...` |
-| `awaiting_ok` | Xanh dương (`#0D47A1`) | `Chờ ok` / `Nói ok để chốt đơn` | Số đếm ngược (`countdown_s`) + `giây` |
-| Mất kết nối (offline) | Xám (`#546E7A`) | `Mất kết nối, đang thử lại` | `...` |
+| `closed` | Xám đen (`#263238`) | Vòng rỗng + `Đã đóng` | Ẩn (xoá cả 2 bong bóng) |
+| `listening` | Xanh lá (`#1B5E20`) | Chấm sáng trong hào quang + `Đang nghe` | Ẩn |
+| `processing` | Cam (`#E65100`) | Ba chấm ngang + `Đang xử lý` | Ẩn (thêm `...` sau câu nghe) |
+| `awaiting_ok` | Xanh dương (`#0D47A1`) | Vòng tròn có chấm giữa + `Chờ ok` | `<countdown_s> giây` ở thanh trên |
+| Mất kết nối (offline) | Xám (`#546E7A`) | Vòng `!` + `Mất kết nối, đang thử lại` | Ẩn |
 
 ## Sơ đồ chân (GPIO)
 
@@ -50,6 +55,6 @@ Lệnh trên bật wake word AFE `"Hi,Lily"` (`wn9_hilili_tts`), gửi dữ li�
   - `too_long`
   - `not_ready`
   - `tts_fail`
-- `self.screen.show_text`: Hiển thị văn bản UTF-8 (tối đa 200 byte) ở vùng tin nhắn trên màn hình theo tham số chuỗi `text` (tối đa 4 dòng, tràn sẽ rút gọn bằng dấu `...`; truyền chuỗi rỗng để xóa).
-- `self.screen.show_status`: Cập nhật màn hình trạng thái phiên nghe theo các tham số `state` (`listening` | `processing` | `awaiting_ok` | `closed`), `text` (UTF-8, tối đa 40 ký tự / 160 byte, hiển thị ở vùng `vừa nghe`), và `countdown_s` (số nguyên tuỳ chọn `0..30`, mặc định `0`). Khi `state = "awaiting_ok"` và `countdown_s > 0`, board chạy bộ đếm ngược cục bộ mỗi 1 giây ở cột phải; mọi lệnh `show_status` mới hoặc thay đổi trạng thái sẽ huỷ bộ đếm.
+- `self.screen.show_text`: Hiển thị văn bản UTF-8 (tối đa 200 byte) ở bong bóng trả lời trên cùng theo tham số chuỗi `text` (tối đa 3 dòng `kViFont20`, tràn sẽ rút gọn bằng dấu `...`; truyền chuỗi rỗng để xóa).
+- `self.screen.show_status`: Cập nhật màn hình trạng thái phiên nghe theo các tham số `state` (`listening` | `processing` | `awaiting_ok` | `closed`), `text` (UTF-8, tối đa 40 ký tự / 160 byte, hiển thị ở bong bóng câu người bán bên dưới), và `countdown_s` (số nguyên tuỳ chọn `0..30`, mặc định `0`). Khi `state = "awaiting_ok"` và `countdown_s > 0`, board chạy bộ đếm ngược cục bộ mỗi 1 giây trên thanh trên cùng; mọi lệnh `show_status` mới hoặc thay đổi trạng thái sẽ huỷ bộ đếm.
 - `self.session.close`: Đưa thiết bị từ trạng thái đang nghe/đang nói về trạng thái nghỉ (`idle`) mà không đóng kênh WebSocket, tự động tắt xử lý giọng nói và bật lại nhận diện wake word.
